@@ -55,36 +55,50 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: List directory contents (debug)
+      - name: List directory structure (debug)
         run: |
-          echo "Repository root contents:"
+          echo "=== Repository root ==="
           ls -la
-          echo "Source directory contents:"
-          ls -la source/
-          echo "Test directory contents:"
-          ls -la test/
+          echo "=== Source directory ==="
+          if [ -d "source" ]; then
+            ls -la source/
+          else
+            echo "source/ directory not found"
+          fi
+          echo "=== Test directory ==="
+          if [ -d "test" ]; then
+            ls -la test/
+          else
+            echo "test/ directory not found"
+          fi
 
       - name: Restore NuGet packages
         run: |
           echo "Restoring packages for source project..."
           dotnet restore source/
-          if [ -d "test" ] && [ "$(ls -A test/)" ]; then
+          
+          if [ -d "test" ] && [ "$(ls -A test/ 2>/dev/null)" ]; then
             echo "Restoring packages for test projects..."
             dotnet restore test/
+          else
+            echo "No test directory or test projects found"
           fi
 
       - name: Build the project
         run: |
           echo "Building source project..."
           dotnet build source/ --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
-          if [ -d "test" ] && [ "$(ls -A test/)" ]; then
+          
+          if [ -d "test" ] && [ "$(ls -A test/ 2>/dev/null)" ]; then
             echo "Building test projects..."
             dotnet build test/ --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
+          else
+            echo "No test projects to build"
           fi
 
       - name: Run unit tests
         run: |
-          if [ -d "test" ] && [ "$(ls -A test/)" ]; then
+          if [ -d "test" ] && [ "$(ls -A test/ 2>/dev/null)" ]; then
             echo "Running tests..."
             dotnet test test/ --configuration ${{ env.BUILD_CONFIGURATION }} --no-build --verbosity normal --collect:"XPlat Code Coverage"
           else
