@@ -1,0 +1,63 @@
+﻿@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Bienvenidos";
+}
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+
+<style>
+    .welcome-container {
+        min-height: 100vh;
+        background: linear-gradient(135deg, #4b6cb7, #182848);
+        color: white;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        padding: 2rem;
+    }
+
+    .welcome-box {
+        background-color: rgba(255, 255, 255, 0.1);
+        border-radius: 15px;
+        padding: 2rem 3rem;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        max-width: 600px;
+    }
+
+    h1 {
+        font-size: 3rem;
+        font-weight: 700;
+        margin-bottom: 1rem;
+    }
+
+    p {
+        margin-top: 1rem;
+        font-size: 1.1rem;
+    }
+
+    a {
+        color: #ffd700;
+        text-decoration: underline;
+    }
+
+    a:hover {
+        color: #ffffff;
+    }
+</style>
+
+<div class="welcome-container">
+    <div class="welcome-box">
+        <h1>👋 Hola Mundo</h1>
+        <h1>👋 Hola Mundo</h1>
+        <h1>👋 Hola Mundo</h1>
+        <h2>Para Tineo y Jefry</h2>
+        <h2>Para Tineo y Jefry</h2>
+
+        
+        <p>Este es un ejemplo de página web usando <strong>pipelines</strong>.</p>
+       
+    </div>
+</div>

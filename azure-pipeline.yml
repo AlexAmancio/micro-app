@@ -1,0 +1,122 @@
+## branches:
+#  include:
+#   - main
+
+#pr:
+# branches:
+#  include:
+#   - main
+
+variables:
+  buildConfiguration: "Release"
+  azureServiceConnection: "service-conn-test" # <--- Tu service connection
+  devAppServiceName: "helloworld-dev-micro-app" # <--- Reemplaza con el nombre real de tu App Service
+  prodAppServiceName: "helloworld-prod-micro-app" # <--- Reemplaza con el nombre real de tu App Service
+  webAppPackagePath: "$(Pipeline.Workspace)/drop/**/*.zip"
+
+stages:
+  # -------------------------------
+  # Build & Test Stage
+  # -------------------------------
+  - stage: BuildAndTest
+    displayName: "Build and Test"
+    jobs:
+      - job: Build
+        displayName: "Build .NET App and Run Tests"
+        pool:
+          vmImage: "ubuntu-latest"
+
+        steps:
+          - task: UseDotNet@2
+            inputs:
+              packageType: "sdk"
+              version: "8.x"
+              installationPath: $(Agent.ToolsDirectory)/dotnet
+
+          - task: DotNetCoreCLI@2
+            displayName: "Restore NuGet packages"
+            inputs:
+              command: "restore"
+              projects: "**/*.csproj"
+
+          - task: DotNetCoreCLI@2
+            displayName: "Build the project"
+            inputs:
+              command: "build"
+              projects: "**/*.csproj"
+              arguments: "--configuration $(buildConfiguration)"
+
+          - task: DotNetCoreCLI@2
+            displayName: "Run unit tests"
+            inputs:
+              command: "test"
+              projects: "**/*Tests/*.csproj"
+              arguments: "--configuration $(buildConfiguration) --no-build"
+
+          - task: DotNetCoreCLI@2
+            displayName: "Publish app"
+            inputs:
+              command: "publish"
+              publishWebProjects: true
+              arguments: "--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)"
+              zipAfterPublish: true
+
+          - publish: "$(Build.ArtifactStagingDirectory)"
+            artifact: drop
+
+  # -------------------------------
+  # Deploy to DEV
+  # -------------------------------
+  - stage: Deploy_Dev
+    displayName: "Deploy to DEV"
+    dependsOn: BuildAndTest
+    jobs:
+      - deployment: DeployToDev
+        displayName: "Deploy to DEV App Service"
+        environment: "dev"
+        pool:
+          vmImage: "ubuntu-latest"
+
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+
+                - task: AzureWebApp@1
+                  displayName: "Deploy to DEV App Service"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    appType: webApp
+                    appName: $(devAppServiceName)
+                    package: $(webAppPackagePath)
+
+  # -------------------------------
+  # Deploy to PROD (with approval)
+  # -------------------------------
+  - stage: Deploy_Prod
+    displayName: "Deploy to PROD"
+    dependsOn: Deploy_Dev
+    condition: succeeded()
+    jobs:
+      - deployment: DeployToProd
+        displayName: "Deploy to PROD App Service"
+        environment: "prod" # Usa Azure DevOps environments para aprobación manual
+        pool:
+          vmImage: "ubuntu-latest"
+
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+
+                - task: AzureWebApp@1
+                  displayName: "Deploy to PROD App Service"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    appType: webApp
+                    appName: $(prodAppServiceName)
+                    package: $(webAppPackagePath)
