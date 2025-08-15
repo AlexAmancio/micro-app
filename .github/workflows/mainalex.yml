@@ -55,17 +55,57 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+      - name: List directory contents (debug)
+        run: |
+          echo "Repository root contents:"
+          ls -la
+          echo "Looking for .NET projects:"
+          find . -name "*.sln" -o -name "*.csproj" | head -10
+
       - name: Restore NuGet packages
-        run: dotnet restore
+        run: |
+          if [ -f "*.sln" ]; then
+            echo "Found solution file, using it"
+            dotnet restore *.sln
+          elif find . -name "*.csproj" | grep -q .; then
+            echo "Found project files, restoring all"
+            dotnet restore
+          else
+            echo "No .NET projects found, checking subdirectories..."
+            find . -name "*.csproj" -execdir dotnet restore {} \;
+          fi
 
       - name: Build the project
-        run: dotnet build --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
+        run: |
+          if [ -f "*.sln" ]; then
+            dotnet build *.sln --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
+          else
+            dotnet build --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
+          fi
 
       - name: Run unit tests
-        run: dotnet test --configuration ${{ env.BUILD_CONFIGURATION }} --no-build --verbosity normal --collect:"XPlat Code Coverage"
+        run: |
+          if find . -name "*Tests*.csproj" -o -name "*.Tests.csproj" | grep -q .; then
+            dotnet test --configuration ${{ env.BUILD_CONFIGURATION }} --no-build --verbosity normal --collect:"XPlat Code Coverage"
+          else
+            echo "No test projects found, skipping tests"
+          fi
 
       - name: Publish app
-        run: dotnet publish --configuration ${{ env.BUILD_CONFIGURATION }} --output ./publish --no-build
+        run: |
+          if [ -f "*.sln" ]; then
+            dotnet publish *.sln --configuration ${{ env.BUILD_CONFIGURATION }} --output ./publish --no-build
+          else
+            # Buscar el proyecto principal (excluir tests)
+            MAIN_PROJECT=$(find . -name "*.csproj" | grep -v -i test | head -1)
+            if [ -n "$MAIN_PROJECT" ]; then
+              echo "Publishing main project: $MAIN_PROJECT"
+              dotnet publish "$MAIN_PROJECT" --configuration ${{ env.BUILD_CONFIGURATION }} --output ./publish --no-build
+            else
+              echo "No main project found"
+              exit 1
+            fi
+          fi
 
       - name: Create deployment package
         run: |
