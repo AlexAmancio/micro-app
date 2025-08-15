@@ -1,244 +1,94 @@
-name: .NET App CI/CD Pipeline
+name: Build and Deploy .NET App
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: "Select deployment environment"
-        required: true
-        default: "dev"
-        type: choice
-        options:
-          - dev
-          - prod
-          - both
+    branches:
+      - main
+  # Uncomment below to enable PR triggers
+  # pull_request:
+  #   branches:
+  #     - main
 
 env:
-  BUILD_CONFIGURATION: Release
-  DOTNET_VERSION: '8.x'
-  DEV_APP_SERVICE_NAME: 'helloworld-dev-micro-app'
-  PROD_APP_SERVICE_NAME: 'helloworld-prod-micro-app'
-
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
+  buildConfiguration: Release
+  webAppPackagePath: ${{ github.workspace }}/drop/**/*.zip
+  devAppServiceName: helloworld-dev-micro-app
+  prodAppServiceName: helloworld-prod-micro-app
 
 jobs:
-  # -------------------------------
-  # Build & Test Job
-  # -------------------------------
   build-and-test:
     name: Build and Test
     runs-on: ubuntu-latest
-    outputs:
-      artifact-name: ${{ steps.set-artifact.outputs.artifact-name }}
-    
+
     steps:
-      - name: Checkout code
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Cache .NET packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
-
-      - name: List directory contents (debug)
-        run: |
-          echo "Repository root contents:"
-          ls -la
-          echo "Looking for .NET projects:"
-          find . -name "*.sln" -o -name "*.csproj" | head -10
+          dotnet-version: '8.x'
 
       - name: Restore NuGet packages
-        run: |
-          if [ -f "*.sln" ]; then
-            echo "Found solution file, using it"
-            dotnet restore *.sln
-          elif find . -name "*.csproj" | grep -q .; then
-            echo "Found project files, restoring all"
-            dotnet restore
-          else
-            echo "No .NET projects found, checking subdirectories..."
-            find . -name "*.csproj" -execdir dotnet restore {} \;
-          fi
+        run: dotnet restore
 
-      - name: Build the project
-        run: |
-          if [ -f "*.sln" ]; then
-            dotnet build *.sln --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
-          else
-            dotnet build --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
-          fi
+      - name: Build project
+        run: dotnet build --configuration ${{ env.buildConfiguration }}
 
       - name: Run unit tests
+        run: dotnet test --configuration ${{ env.buildConfiguration }} --no-build
+
+      - name: Publish project
         run: |
-          if find . -name "*Tests*.csproj" -o -name "*.Tests.csproj" | grep -q .; then
-            dotnet test --configuration ${{ env.BUILD_CONFIGURATION }} --no-build --verbosity normal --collect:"XPlat Code Coverage"
-          else
-            echo "No test projects found, skipping tests"
-          fi
+          dotnet publish --configuration ${{ env.buildConfiguration }} --output ./publish
+          mkdir -p drop
+          cd publish && zip -r ../drop/app.zip .
 
-      - name: Publish app
-        run: |
-          if [ -f "*.sln" ]; then
-            dotnet publish *.sln --configuration ${{ env.BUILD_CONFIGURATION }} --output ./publish --no-build
-          else
-            # Buscar el proyecto principal (excluir tests)
-            MAIN_PROJECT=$(find . -name "*.csproj" | grep -v -i test | head -1)
-            if [ -n "$MAIN_PROJECT" ]; then
-              echo "Publishing main project: $MAIN_PROJECT"
-              dotnet publish "$MAIN_PROJECT" --configuration ${{ env.BUILD_CONFIGURATION }} --output ./publish --no-build
-            else
-              echo "No main project found"
-              exit 1
-            fi
-          fi
-
-      - name: Create deployment package
-        run: |
-          cd ./publish
-          zip -r ../app-package.zip .
-          cd ..
-
-      - name: Set artifact name
-        id: set-artifact
-        run: echo "artifact-name=app-package-${{ github.run_number }}" >> $GITHUB_OUTPUT
-
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.set-artifact.outputs.artifact-name }}
-          path: app-package.zip
-          retention-days: 30
+          name: drop
+          path: drop/app.zip
 
-  # -------------------------------
-  # Deploy to DEV
-  # -------------------------------
   deploy-dev:
     name: Deploy to DEV
     runs-on: ubuntu-latest
     needs: build-and-test
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' || github.event.inputs.environment == 'both'))
-    environment:
-      name: development
-      url: https://${{ env.DEV_APP_SERVICE_NAME }}.azurewebsites.net
-    
+    environment: dev
+
     steps:
-      - name: Download build artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.build-and-test.outputs.artifact-name }}
-
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          name: drop
+          path: drop
 
       - name: Deploy to Azure Web App (DEV)
-        uses: azure/webapps-deploy@v3
+        uses: azure/webapps-deploy@v2
         with:
-          app-name: ${{ env.DEV_APP_SERVICE_NAME }}
-          package: app-package.zip
+          app-name: ${{ env.devAppServiceName }}
+          package: ${{ env.webAppPackagePath }}
+          publish-profile: ${{ secrets.AZURE_DEV_PUBLISH_PROFILE }}
 
-      - name: Logout from Azure
-        run: az logout
-        if: always()
-
-  # -------------------------------
-  # Manual Approval for PROD
-  # -------------------------------
-  approval-prod:
-    name: Approval for PROD Deployment
-    runs-on: ubuntu-latest
-    needs: [build-and-test, deploy-dev]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'prod' || github.event.inputs.environment == 'both'))
-    
-    steps:
-      - name: Request manual approval for PROD
-        uses: trstringer/manual-approval@v1
-        with:
-          secret: ${{ secrets.GITHUB_TOKEN }}
-          approvers: ${{ github.repository_owner }}
-          minimum-approvals: 1
-          issue-title: "🚀 PROD Deployment Approval - Build #${{ github.run_number }}"
-          issue-body: |
-            ## Production Deployment Request
-            
-            **Build Number:** #${{ github.run_number }}
-            **Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
-            **Author:** @${{ github.actor }}
-            **Workflow:** [${{ github.workflow }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            
-            ### Changes
-            ${{ github.event.head_commit.message || 'Manual deployment triggered' }}
-            
-            ### Environments
-            - ✅ **DEV:** Deployed successfully
-            - ⏳ **PROD:** Awaiting approval
-            
-            ### App Service
-            **Target:** `${{ env.PROD_APP_SERVICE_NAME }}`
-            
-            ---
-            
-            **Instructions:**
-            - Review the changes and DEV deployment
-            - Comment `approved` to proceed with PROD deployment
-            - Comment `denied` to cancel PROD deployment
-          exclude-workflow-initiator-as-approver: false
-
-  # -------------------------------
-  # Deploy to PROD
-  # -------------------------------
   deploy-prod:
     name: Deploy to PROD
     runs-on: ubuntu-latest
-    needs: [build-and-test, deploy-dev, approval-prod]
-    if: always() && needs.approval-prod.result == 'success'
+    needs: deploy-dev
     environment:
-      name: production
-      url: https://${{ env.PROD_APP_SERVICE_NAME }}.azurewebsites.net
-    
+      name: prod
+      url: https://helloworld-prod-micro-app.azurewebsites.net
+      # Ensure "Require manual approval" is enabled in GitHub environment settings
+
     steps:
-      - name: Download build artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.build-and-test.outputs.artifact-name }}
-
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          name: drop
+          path: drop
 
       - name: Deploy to Azure Web App (PROD)
-        uses: azure/webapps-deploy@v3
+        uses: azure/webapps-deploy@v2
         with:
-          app-name: ${{ env.PROD_APP_SERVICE_NAME }}
-          package: app-package.zip
-
-      - name: Logout from Azure
-        run: az logout
-        if: always()
-
-      - name: Deployment Summary
-        run: |
-          echo "## 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Production Deployment Details" >> $GITHUB_STEP_SUMMARY
-          echo "- **App Service:** ${{ env.PROD_APP_SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build:** #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **URL:** https://${{ env.PROD_APP_SERVICE_NAME }}.azurewebsites.net" >> $GITHUB_STEP_SUMMARY
+          app-name: ${{ env.prodAppServiceName }}
+          package: ${{ env.webAppPackagePath }}
+          publish-profile: ${{ secrets.AZURE_PROD_PUBLISH_PROFILE }}
