@@ -1,122 +1,204 @@
-## branches:
-#  include:
-#   - main
+name: .NET App CI/CD Pipeline
 
-#pr:
-# branches:
-#  include:
-#   - main
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select deployment environment"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+          - both
 
-variables:
-  buildConfiguration: "Release"
-  azureServiceConnection: "service-conn-test" # <--- Tu service connection
-  devAppServiceName: "helloworld-dev-micro-app" # <--- Reemplaza con el nombre real de tu App Service
-  prodAppServiceName: "helloworld-prod-micro-app" # <--- Reemplaza con el nombre real de tu App Service
-  webAppPackagePath: "$(Pipeline.Workspace)/drop/**/*.zip"
+env:
+  BUILD_CONFIGURATION: Release
+  DOTNET_VERSION: '8.x'
+  DEV_APP_SERVICE_NAME: 'helloworld-dev-micro-app'
+  PROD_APP_SERVICE_NAME: 'helloworld-prod-micro-app'
 
-stages:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
   # -------------------------------
-  # Build & Test Stage
+  # Build & Test Job
   # -------------------------------
-  - stage: BuildAndTest
-    displayName: "Build and Test"
-    jobs:
-      - job: Build
-        displayName: "Build .NET App and Run Tests"
-        pool:
-          vmImage: "ubuntu-latest"
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.set-artifact.outputs.artifact-name }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        steps:
-          - task: UseDotNet@2
-            inputs:
-              packageType: "sdk"
-              version: "8.x"
-              installationPath: $(Agent.ToolsDirectory)/dotnet
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-          - task: DotNetCoreCLI@2
-            displayName: "Restore NuGet packages"
-            inputs:
-              command: "restore"
-              projects: "**/*.csproj"
+      - name: Cache .NET packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
 
-          - task: DotNetCoreCLI@2
-            displayName: "Build the project"
-            inputs:
-              command: "build"
-              projects: "**/*.csproj"
-              arguments: "--configuration $(buildConfiguration)"
+      - name: Restore NuGet packages
+        run: dotnet restore
 
-          - task: DotNetCoreCLI@2
-            displayName: "Run unit tests"
-            inputs:
-              command: "test"
-              projects: "**/*Tests/*.csproj"
-              arguments: "--configuration $(buildConfiguration) --no-build"
+      - name: Build the project
+        run: dotnet build --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
 
-          - task: DotNetCoreCLI@2
-            displayName: "Publish app"
-            inputs:
-              command: "publish"
-              publishWebProjects: true
-              arguments: "--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)"
-              zipAfterPublish: true
+      - name: Run unit tests
+        run: dotnet test --configuration ${{ env.BUILD_CONFIGURATION }} --no-build --verbosity normal --collect:"XPlat Code Coverage"
 
-          - publish: "$(Build.ArtifactStagingDirectory)"
-            artifact: drop
+      - name: Publish app
+        run: dotnet publish --configuration ${{ env.BUILD_CONFIGURATION }} --output ./publish --no-build
+
+      - name: Create deployment package
+        run: |
+          cd ./publish
+          zip -r ../app-package.zip .
+          cd ..
+
+      - name: Set artifact name
+        id: set-artifact
+        run: echo "artifact-name=app-package-${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.set-artifact.outputs.artifact-name }}
+          path: app-package.zip
+          retention-days: 30
 
   # -------------------------------
   # Deploy to DEV
   # -------------------------------
-  - stage: Deploy_Dev
-    displayName: "Deploy to DEV"
-    dependsOn: BuildAndTest
-    jobs:
-      - deployment: DeployToDev
-        displayName: "Deploy to DEV App Service"
-        environment: "dev"
-        pool:
-          vmImage: "ubuntu-latest"
+  deploy-dev:
+    name: Deploy to DEV
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' || github.event.inputs.environment == 'both'))
+    environment:
+      name: development
+      url: https://${{ env.DEV_APP_SERVICE_NAME }}.azurewebsites.net
+    
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-and-test.outputs.artifact-name }}
 
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: drop
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-                - task: AzureWebApp@1
-                  displayName: "Deploy to DEV App Service"
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    appType: webApp
-                    appName: $(devAppServiceName)
-                    package: $(webAppPackagePath)
+      - name: Deploy to Azure Web App (DEV)
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.DEV_APP_SERVICE_NAME }}
+          package: app-package.zip
+
+      - name: Logout from Azure
+        run: az logout
+        if: always()
 
   # -------------------------------
-  # Deploy to PROD (with approval)
+  # Manual Approval for PROD
   # -------------------------------
-  - stage: Deploy_Prod
-    displayName: "Deploy to PROD"
-    dependsOn: Deploy_Dev
-    condition: succeeded()
-    jobs:
-      - deployment: DeployToProd
-        displayName: "Deploy to PROD App Service"
-        environment: "prod" # Usa Azure DevOps environments para aprobación manual
-        pool:
-          vmImage: "ubuntu-latest"
+  approval-prod:
+    name: Approval for PROD Deployment
+    runs-on: ubuntu-latest
+    needs: [build-and-test, deploy-dev]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'prod' || github.event.inputs.environment == 'both'))
+    
+    steps:
+      - name: Request manual approval for PROD
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.GITHUB_TOKEN }}
+          approvers: ${{ github.repository_owner }}
+          minimum-approvals: 1
+          issue-title: "🚀 PROD Deployment Approval - Build #${{ github.run_number }}"
+          issue-body: |
+            ## Production Deployment Request
+            
+            **Build Number:** #${{ github.run_number }}
+            **Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **Author:** @${{ github.actor }}
+            **Workflow:** [${{ github.workflow }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ### Changes
+            ${{ github.event.head_commit.message || 'Manual deployment triggered' }}
+            
+            ### Environments
+            - ✅ **DEV:** Deployed successfully
+            - ⏳ **PROD:** Awaiting approval
+            
+            ### App Service
+            **Target:** `${{ env.PROD_APP_SERVICE_NAME }}`
+            
+            ---
+            
+            **Instructions:**
+            - Review the changes and DEV deployment
+            - Comment `approved` to proceed with PROD deployment
+            - Comment `denied` to cancel PROD deployment
+          exclude-workflow-initiator-as-approver: false
 
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: drop
+  # -------------------------------
+  # Deploy to PROD
+  # -------------------------------
+  deploy-prod:
+    name: Deploy to PROD
+    runs-on: ubuntu-latest
+    needs: [build-and-test, deploy-dev, approval-prod]
+    if: always() && needs.approval-prod.result == 'success'
+    environment:
+      name: production
+      url: https://${{ env.PROD_APP_SERVICE_NAME }}.azurewebsites.net
+    
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-and-test.outputs.artifact-name }}
 
-                - task: AzureWebApp@1
-                  displayName: "Deploy to PROD App Service"
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    appType: webApp
-                    appName: $(prodAppServiceName)
-                    package: $(webAppPackagePath)
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Web App (PROD)
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.PROD_APP_SERVICE_NAME }}
+          package: app-package.zip
+
+      - name: Logout from Azure
+        run: az logout
+        if: always()
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Production Deployment Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **App Service:** ${{ env.PROD_APP_SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build:** #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://${{ env.PROD_APP_SERVICE_NAME }}.azurewebsites.net" >> $GITHUB_STEP_SUMMARY
