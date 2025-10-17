@@ -12,8 +12,8 @@ on:
 env:
   buildConfiguration: Release
   webAppPackagePath: ${{ github.workspace }}/drop/**/*.zip
-  devAppServiceName: helloworld-dev-micro-app
-  prodAppServiceName: helloworld-prod-micro-app
+  devAppServiceName: helloworld-dev-micro-GIT
+  prodAppServiceName: helloworld-prod-micro-GIT
 
 jobs:
   build-and-test:
@@ -27,7 +27,7 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.x'
+          dotnet-version: "8.x"
 
       - name: Restore NuGet packages
         run: dotnet restore
