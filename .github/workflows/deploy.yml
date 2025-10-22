@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-  # Uncomment below to enable PR triggers
   # pull_request:
   #   branches:
   #     - main
@@ -30,17 +29,17 @@ jobs:
           dotnet-version: "8.x"
 
       - name: Restore NuGet packages
-        run: dotnet restore
+        run: dotnet restore src/HelloWorld/HelloWorld.csproj
 
       - name: Build project
-        run: dotnet build --configuration ${{ env.buildConfiguration }}
+        run: dotnet build src/HelloWorld/HelloWorld.csproj --configuration ${{ env.buildConfiguration }}
 
       - name: Run unit tests
-        run: dotnet test --configuration ${{ env.buildConfiguration }} --no-build
+        run: dotnet test src/HelloWorld/HelloWorld.csproj --configuration ${{ env.buildConfiguration }} --no-build
 
       - name: Publish project
         run: |
-          dotnet publish --configuration ${{ env.buildConfiguration }} --output ./publish
+          dotnet publish src/HelloWorld/HelloWorld.csproj --configuration ${{ env.buildConfiguration }} --output ./publish
           mkdir -p drop
           cd publish && zip -r ../drop/app.zip .
 
