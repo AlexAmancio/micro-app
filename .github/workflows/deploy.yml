@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-  # pull_request:
-  #   branches:
-  #     - main
 
 env:
   buildConfiguration: Release
@@ -76,7 +73,7 @@ jobs:
     environment:
       name: prod
       url: https://helloworld-prod-micro-app.azurewebsites.net
-      # Ensure "Require manual approval" is enabled in GitHub environment settings
+      # Asegúrate de tener "Require manual approval" habilitado en GitHub Environment PROD
 
     steps:
       - name: Download artifact
